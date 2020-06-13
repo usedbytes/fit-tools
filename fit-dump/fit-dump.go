@@ -10,6 +10,8 @@ import (
 	"math"
 	"reflect"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/tormoder/fit"
 )
@@ -92,14 +94,24 @@ var invalidValues = map[reflect.Kind]func(reflect.Value) bool {
 }
 
 func dumpField(field reflect.Value, name string, level int) {
-	if _, ok := field.Type().MethodByName("String"); ok {
-		method := field.MethodByName("String")
+	if method := field.MethodByName("String"); method.IsValid() {
 		str := method.Call(nil)[0].String()
 		if strings.HasSuffix(str, "Invalid") {
 			return
 		}
 		printIndent(level, "%s: %s\n", name, str);
 	} else if invalidFunc, ok := invalidValues[field.Kind()]; ok {
+		// FIXME: This doesn't handle the 'z' variants, but I'm not sure
+		// there's much that can be done about it as the information on
+		// the field type is hidden.
+		// This also means that a field might be incorrectly excluded,
+		// if it's a 'z' type and holds a value which looks invalid for
+		// a non-'z' type.
+		// Fixing this without modifying the fit package probably means
+		// auto-generating a map of message type -> constructor, to
+		// compare against. Alternatively, the fit package could be
+		// extended to provide information on invalid values, but I'm
+		// not sure what a good interface for that would look like.
 		if invalidFunc(field) {
 			return
 		}
@@ -109,48 +121,174 @@ func dumpField(field reflect.Value, name string, level int) {
 	}
 }
 
+func exported(name string) bool {
+	r, l := utf8.DecodeRune([]byte(name))
+	if r == utf8.RuneError && (l <= 1) {
+		// I guess this should never be able to happen
+		panic("unicode error")
+	}
+
+	return unicode.IsUpper(r)
+}
+
 func dumpRecursive(val reflect.Value, name string, level int) {
-	switch val.Kind() {
-	case reflect.Struct:
-		if _, ok := val.Type().MethodByName("String"); ok {
-			method := val.MethodByName("String")
-			str := method.Call(nil)[0].String()
-			printIndent(level, "%s: %s\n", name, str);
-		} else {
+	// TODO: I'm not very happy with all the different conditions/branches
+	// here. It's a bit spaghetti
+	if method := val.MethodByName("String"); method.IsValid() {
+		// For Stringers, dump them right away
+		dumpField(val, name, level)
+	} else {
+		switch val.Kind() {
+		case reflect.Struct:
+			// TODO: If all fields are invalid or unexported,
+			// should we skip it entirely?
 			printIndent(level, "%s:\n", name)
 			for i := 0; i < val.NumField(); i++ {
 				v := val.Field(i)
 				name = val.Type().Field(i).Name
-				// FIXME: Unicode.
-				if len(name) > 0 && strings.ToLower(name[:1]) == name[:1] {
+				if !exported(name) {
 					continue
 				}
-
 				dumpRecursive(v, val.Type().Field(i).Name, level+1)
 			}
+			printIndent(level, "---\n")
+		case reflect.Ptr:
+			if val.IsNil() {
+				break
+			}
+			dumpRecursive(reflect.Indirect(val), name, level)
+		case reflect.Slice:
+			if val.Len() == 0 {
+				break
+			}
+			printIndent(level, "%s (%d elems):\n", name, val.Len())
+			for i := 0; i < val.Len(); i++ {
+				name = fmt.Sprintf("[%d]", i)
+				dumpRecursive(reflect.Indirect(val.Index(i)), name, level+1)
+			}
+		default:
+			dumpField(val, name, level)
 		}
-	case reflect.Ptr:
-		if val.IsNil() {
-			break
-		}
-		dumpRecursive(reflect.Indirect(val), name, level)
-	case reflect.Slice:
-		if val.Len() == 0 {
-			break
-		}
-		printIndent(level, "%s (%d elems):\n", name, val.Len())
-		for i := 0; i < val.Len(); i++ {
-			name = fmt.Sprintf("[%d]", i)
-			dumpRecursive(reflect.Indirect(val.Index(i)), name, level+1)
-		}
-	default:
-		dumpField(val, name, level)
 	}
-
 }
 
-func dumpFile(file reflect.Value) {
-	dumpRecursive(file, "File", 0)
+func getFileValue(fitf *fit.File) (reflect.Value, error) {
+	// Take care not to shadow these
+	var data reflect.Value
+	var err error
+
+	// This could be done with reflection based on Field.Name(), but
+	// then it would be tied to internal details of the fit package
+	// which doesn't sound ideal.
+	switch fitf.Type() {
+	case fit.FileTypeActivity:
+		var activity *fit.ActivityFile
+		activity, err = fitf.Activity()
+		// Note: == nil, success case
+		if err == nil {
+			data = reflect.ValueOf(*activity)
+		}
+	case fit.FileTypeDevice:
+		var device *fit.DeviceFile
+		device, err = fitf.Device()
+		if err == nil {
+			data = reflect.ValueOf(*device)
+		}
+	case fit.FileTypeSettings:
+		var settings *fit.SettingsFile
+		settings, err = fitf.Settings()
+		if err == nil {
+			data = reflect.ValueOf(*settings)
+		}
+	case fit.FileTypeSport:
+		var sport *fit.SportFile
+		sport, err = fitf.Sport()
+		if err == nil {
+			data = reflect.ValueOf(*sport)
+		}
+	case fit.FileTypeWorkout:
+		var workout *fit.WorkoutFile
+		workout, err = fitf.Workout()
+		if err == nil {
+			data = reflect.ValueOf(*workout)
+		}
+	case fit.FileTypeCourse:
+		var course *fit.CourseFile
+		course, err = fitf.Course()
+		if err == nil {
+			data = reflect.ValueOf(*course)
+		}
+	case fit.FileTypeSchedules:
+		var schedules *fit.SchedulesFile
+		schedules, err = fitf.Schedules()
+		if err == nil {
+			data = reflect.ValueOf(*schedules)
+		}
+	case fit.FileTypeWeight:
+		var weight *fit.WeightFile
+		weight, err = fitf.Weight()
+		if err == nil {
+			data = reflect.ValueOf(*weight)
+		}
+	case fit.FileTypeTotals:
+		var totals *fit.TotalsFile
+		totals, err = fitf.Totals()
+		if err == nil {
+			data = reflect.ValueOf(*totals)
+		}
+	case fit.FileTypeGoals:
+		var goals *fit.GoalsFile
+		goals, err = fitf.Goals()
+		if err == nil {
+			data = reflect.ValueOf(*goals)
+		}
+	case fit.FileTypeBloodPressure:
+		var bloodPressure *fit.BloodPressureFile
+		bloodPressure, err = fitf.BloodPressure()
+		if err == nil {
+			data = reflect.ValueOf(*bloodPressure)
+		}
+	case fit.FileTypeMonitoringA:
+		var monitoringA *fit.MonitoringAFile
+		monitoringA, err = fitf.MonitoringA()
+		if err == nil {
+			data = reflect.ValueOf(*monitoringA)
+		}
+	case fit.FileTypeActivitySummary:
+		var activitySummary *fit.ActivitySummaryFile
+		activitySummary, err = fitf.ActivitySummary()
+		if err == nil {
+			data = reflect.ValueOf(*activitySummary)
+		}
+	case fit.FileTypeMonitoringDaily:
+		var monitoringDaily *fit.MonitoringDailyFile
+		monitoringDaily, err = fitf.MonitoringDaily()
+		if err == nil {
+			data = reflect.ValueOf(*monitoringDaily)
+		}
+	case fit.FileTypeMonitoringB:
+		var monitoringB *fit.MonitoringBFile
+		monitoringB, err = fitf.MonitoringB()
+		if err == nil {
+			data = reflect.ValueOf(*monitoringB)
+		}
+	case fit.FileTypeSegment:
+		var segment *fit.SegmentFile
+		segment, err = fitf.Segment()
+		if err == nil {
+			data = reflect.ValueOf(*segment)
+		}
+	case fit.FileTypeSegmentList:
+		var segmentList *fit.SegmentListFile
+		segmentList, err = fitf.SegmentList()
+		if err == nil {
+			data = reflect.ValueOf(*segmentList)
+		}
+	default:
+		return data, fmt.Errorf("unknown filetype '%v'", fitf.Type())
+	}
+
+	return data, err
 }
 
 func run() error {
@@ -177,115 +315,11 @@ func run() error {
 	dumpRecursive(reflect.ValueOf(fitf.UnknownMessages), "UnknownMessages", 0)
 	dumpRecursive(reflect.ValueOf(fitf.UnknownFields), "UnknownFields", 0)
 
-	var data reflect.Value
-	switch fitf.Type() {
-	case fit.FileTypeActivity:
-		activity, err := fitf.Activity()
-		if err != nil {
-			return fmt.Errorf("get file failed: %v", err)
-		}
-		data = reflect.ValueOf(*activity)
-	case fit.FileTypeDevice:
-		device, err := fitf.Device()
-		if err != nil {
-			return fmt.Errorf("get file failed: %v", err)
-		}
-		data = reflect.ValueOf(*device)
-	case fit.FileTypeSettings:
-		settings, err := fitf.Settings()
-		if err != nil {
-			return fmt.Errorf("get file failed: %v", err)
-		}
-		data = reflect.ValueOf(*settings)
-	case fit.FileTypeSport:
-		sport, err := fitf.Sport()
-		if err != nil {
-			return fmt.Errorf("get file failed: %v", err)
-		}
-		data = reflect.ValueOf(*sport)
-	case fit.FileTypeWorkout:
-		workout, err := fitf.Workout()
-		if err != nil {
-			return fmt.Errorf("get file failed: %v", err)
-		}
-		data = reflect.ValueOf(*workout)
-	case fit.FileTypeCourse:
-		course, err := fitf.Course()
-		if err != nil {
-			return fmt.Errorf("get file failed: %v", err)
-		}
-		data = reflect.ValueOf(*course)
-	case fit.FileTypeSchedules:
-		schedules, err := fitf.Schedules()
-		if err != nil {
-			return fmt.Errorf("get file failed: %v", err)
-		}
-		data = reflect.ValueOf(*schedules)
-	case fit.FileTypeWeight:
-		weight, err := fitf.Weight()
-		if err != nil {
-			return fmt.Errorf("get file failed: %v", err)
-		}
-		data = reflect.ValueOf(*weight)
-	case fit.FileTypeTotals:
-		totals, err := fitf.Totals()
-		if err != nil {
-			return fmt.Errorf("get file failed: %v", err)
-		}
-		data = reflect.ValueOf(*totals)
-	case fit.FileTypeGoals:
-		goals, err := fitf.Goals()
-		if err != nil {
-			return fmt.Errorf("get file failed: %v", err)
-		}
-		data = reflect.ValueOf(*goals)
-	case fit.FileTypeBloodPressure:
-		bloodPressure, err := fitf.BloodPressure()
-		if err != nil {
-			return fmt.Errorf("get file failed: %v", err)
-		}
-		data = reflect.ValueOf(*bloodPressure)
-	case fit.FileTypeMonitoringA:
-		monitoringA, err := fitf.MonitoringA()
-		if err != nil {
-			return fmt.Errorf("get file failed: %v", err)
-		}
-		data = reflect.ValueOf(*monitoringA)
-	case fit.FileTypeActivitySummary:
-		activitySummary, err := fitf.ActivitySummary()
-		if err != nil {
-			return fmt.Errorf("get file failed: %v", err)
-		}
-		data = reflect.ValueOf(*activitySummary)
-	case fit.FileTypeMonitoringDaily:
-		monitoringDaily, err := fitf.MonitoringDaily()
-		if err != nil {
-			return fmt.Errorf("get file failed: %v", err)
-		}
-		data = reflect.ValueOf(*monitoringDaily)
-	case fit.FileTypeMonitoringB:
-		monitoringB, err := fitf.MonitoringB()
-		if err != nil {
-			return fmt.Errorf("get file failed: %v", err)
-		}
-		data = reflect.ValueOf(*monitoringB)
-	case fit.FileTypeSegment:
-		segment, err := fitf.Segment()
-		if err != nil {
-			return fmt.Errorf("get file failed: %v", err)
-		}
-		data = reflect.ValueOf(*segment)
-	case fit.FileTypeSegmentList:
-		segmentList, err := fitf.SegmentList()
-		if err != nil {
-			return fmt.Errorf("get file failed: %v", err)
-		}
-		data = reflect.ValueOf(*segmentList)
-	default:
-		return fmt.Errorf("get file failed: Unknown filetype '%v'", fitf.Type())
+	body, err := getFileValue(fitf)
+	if err != nil {
+		return err
 	}
-
-	dumpRecursive(data, data.Type().Name(), 0)
+	dumpRecursive(body, body.Type().Name(), 0)
 
 	return nil
 }
