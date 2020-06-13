@@ -16,28 +16,6 @@ import (
 	"github.com/tormoder/fit"
 )
 
-func dumpUnknownMessages(msgs []fit.UnknownMessage) {
-	if len(msgs) == 0 {
-		return
-	}
-
-	fmt.Printf("Unknown Messages:\n")
-	for i, msg := range(msgs) {
-		fmt.Printf("  [%d] %#v\n", i, msg)
-	}
-}
-
-func dumpUnknownFields(fields []fit.UnknownField) {
-	if len(fields) == 0 {
-		return
-	}
-
-	fmt.Printf("Unknown Fields:\n")
-	for i, field := range(fields) {
-		fmt.Printf("  [%d] %#v\n", i, field)
-	}
-}
-
 func printIndent(level int, format string, args ...interface{}) {
 	fmt.Printf("%s", strings.Repeat("\t", level))
 	fmt.Printf(format, args...)
