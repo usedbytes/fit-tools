@@ -285,14 +285,10 @@ func run() error {
 		return err
 	}
 
-	dumpRecursive(reflect.ValueOf(fitf.Header), "Header", 0)
-	dumpRecursive(reflect.ValueOf(fitf.CRC), "File CRC", 0)
-	dumpRecursive(reflect.ValueOf(fitf.FileId), "FileId", 0)
-	dumpRecursive(reflect.ValueOf(fitf.FileCreator), "FileCreator", 0)
-	dumpRecursive(reflect.ValueOf(fitf.TimestampCorrelation), "TimestampCorrelation", 0)
-	dumpRecursive(reflect.ValueOf(fitf.UnknownMessages), "UnknownMessages", 0)
-	dumpRecursive(reflect.ValueOf(fitf.UnknownFields), "UnknownFields", 0)
+	// Dump all of the exported fields
+	dumpRecursive(reflect.ValueOf(*fitf), flag.Args()[0], 0)
 
+	// Body isn't exported, so we have to handle it separately
 	body, err := getFileValue(fitf)
 	if err != nil {
 		return err
