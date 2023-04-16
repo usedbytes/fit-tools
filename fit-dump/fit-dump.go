@@ -280,7 +280,7 @@ func run() error {
 	}
 	defer f.Close()
 
-	fitf, err := fit.Decode(f, fit.WithUnknownMessages())
+	fitf, err := fit.Decode(f, fit.WithStdLogger())
 	if err != nil {
 		return err
 	}
